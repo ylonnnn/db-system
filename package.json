@@ -1,0 +1,8 @@
+{
+    "scripts": {
+        "main": "ts-node src/main"
+    },
+    "devDependencies": {
+        "@types/node": "^26.0.0"
+    }
+}
