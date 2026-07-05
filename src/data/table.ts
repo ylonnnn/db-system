@@ -1,5 +1,5 @@
-import { Option, isObject } from "../utils";
-import { BPlusTree } from "./bp_tree";
+import { Option, isObject, runJob } from "../utils";
+import { BPlusTree, Key } from "./bp_tree";
 import { Database } from "./database";
 import { ExtractFieldSchemaType, FieldSchema, FieldSchemaType } from "./schema";
 
@@ -29,41 +29,135 @@ export type ModelData<M extends Model> = {
     [K in keyof M]: ExtractFieldSchemaType<M[K]> extends FieldSchemaType<
         infer T
     >
-        ? T
+        ? T | null
         : never;
 };
 
-export type ModelDataContainer<
-    M extends Model,
-    D extends ModelData<M> = ModelData<M>,
-> = {
-    [K in keyof D]: D[K][];
-};
+export interface ModelDataContainer<M extends Model> {
+    columns: { [K in keyof ModelData<M>]: ModelData<M>[K][] };
+    rows: ModelData<M>[];
+}
+
+export interface ModelPlan<M extends Model, K extends keyof M = keyof M> {
+    key: K;
+    column: ModelData<M>[K][];
+    default: (() => ModelData<M>[K]) | null;
+    index: BPlusTree<ModelData<M>> | undefined;
+}
 
 export class Table<M extends Model> {
-    public container = {} as ModelDataContainer<M>;
     private __indices = new Map<keyof M, BPlusTree<ModelData<M>>>();
+    private __container = {
+        columns: {},
+        rows: [] as ModelData<M>[],
+    } as ModelDataContainer<M>;
+    private __plan: ModelPlan<M>[] = [];
 
     public constructor(
         public readonly name: string,
         public readonly model: M,
     ) {
-        for (const key in this.model) this.container[key] = [] as any[];
+        let hasPrimary = false;
+        for (const key in this.model) {
+            const field = this.model[key];
+            hasPrimary ||= field.config.isPrimary;
+
+            this.__container.columns[key] = [] as any[];
+            this.__plan.push({
+                key,
+                column: this.__container.columns[key],
+                default: field.config.default as (() => any) | null,
+                index: this.__indices.get(key),
+            });
+        }
+
+        // TODO: handle models with no primary keys
     }
 
     public createIndex<K extends keyof M>(field: K) {
         if (this.__indices.has(field)) return;
 
-        this.__indices.set(
-            field,
-            new BPlusTree(Database.MAXIMUM_INDEX_KEY_COUNT),
+        // TODO: allow any kind of field to be used as keys
+        // for the B+ tree.
+
+        const tree = new BPlusTree<ModelData<M>>(
+            Database.MAXIMUM_INDEX_KEY_COUNT,
         );
+
+        for (const row of this.__container.rows) {
+            tree.add(
+                new Key(
+                    row[field] as number,
+                    /* TODO: use its own schema to convert values to key representations */
+                    /* TODO: use primary keys as the secondary value in the key */
+                ),
+                row,
+            );
+        }
+
+        this.__indices.set(field, tree);
+    }
+
+    protected normalize(data: Partial<ModelData<M>>): ModelData<M> {
+        for (const key in this.model)
+            data[key] =
+                ((data[key] ?? this.model[key].config.default?.()) as any) ??
+                null;
+
+        return data as ModelData<M>;
+    }
+
+    protected store(data: ModelData<M>) {
+        this.__container.rows.push(data);
+
+        for (let i = 0; i < this.__plan.length; ++i) {
+            const field = this.__plan[i];
+            const { key, column, default: def } = field;
+
+            column.push(data[key] ?? (def?.() as any) ?? null);
+
+            if (!field.index) field.index = this.__indices.get(key);
+            field.index?.add(
+                new Key(
+                    data[key] as number,
+                    /* TODO: use its own schema to convert values to key representations */
+                    /* TODO: use primary keys as the secondary value in the key */
+                ),
+                data,
+            );
+        }
+    }
+
+    protected bulkStore(data: ModelData<M>[]) {
+        const store = this.store.bind(this);
+        function* bulk() {
+            for (const row of data) {
+                store(row);
+                yield;
+            }
+        }
+
+        runJob(bulk());
     }
 
     public write(data: Partial<ModelData<M>>) {
         // TODO: use Result<_, _>
-        const valid = this.validate(data);
-        console.log(`valid: ${valid}`);
+        if (!this.validate(data)) return;
+
+        const row = this.normalize(data);
+        this.store(row);
+    }
+
+    public bulkWrite(data: Partial<ModelData<M>>[]) {
+        const write = this.write.bind(this);
+        function* bulk() {
+            for (const row of data) {
+                write(row);
+                yield;
+            }
+        }
+
+        runJob(bulk());
     }
 
     public validate(value: any): boolean {

@@ -13,41 +13,37 @@ import {
 main();
 
 function main(): void {
-    const tree = new BPlusTree(32);
-    const exclude: number[] = [];
+    let counter = 0;
+    const db = new Database("test");
+    const table = db.tables.create("Product", {
+        id: new FieldSchema(schemas.Int, {
+            isPrimary: true,
+            default: () => counter++,
+        }),
+        name: new FieldSchema(schemas.String, {
+            check: (data) => data.length <= 64,
+        }),
+        price: new FieldSchema(schemas.Float),
+        description: new FieldSchema(schemas.String, {
+            check: (data) => data.length <= 256,
+        }),
+    });
 
-    for (const key of Array(4096)
-        .fill(0)
-        .map((_, i) => i))
-    // .map((_, __, { length }) => Math.round(Math.random() * length))
-    {
-        if (exclude.includes(key)) continue;
+    table.createIndex("id");
 
-        tree.add(new Key(key, key), key);
-    }
+    table.bulkWrite([
+        {
+            name: "test",
+            price: 12.8,
+        },
+        {
+            name: "bread",
+            price: 1.0,
+        },
+    ]);
 
-    console.log(tree.toString());
-    const result = tree.find(50, 61);
-    console.log(result);
+    console.log(table);
 
-    // let counter = 0;
-    // const db = new Database("test");
-    // const table = db.tables.create("Product", {
-    //     id: new FieldSchema(schemas.Int, {
-    //         isPrimary: true,
-    //         default: () => counter++,
-    //     }),
-    //     name: new FieldSchema(schemas.String, {
-    //         check: (data) => data.length <= 64,
-    //     }),
-    //     price: new FieldSchema(schemas.Float),
-    //     description: new FieldSchema(schemas.String, {
-    //         check: (data) => data.length <= 256,
-    //     }),
-    // });
-
-    // table.createIndex
-
-    // table.write({ name: "bread", price: 2 })
-    // table.createIndex("id")
+    // @ts-expect-error
+    console.log(table.__container.rows);
 }
