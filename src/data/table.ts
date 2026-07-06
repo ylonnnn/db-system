@@ -1,4 +1,4 @@
-import { Option, isObject, runJob } from "../utils";
+import { Option, Result, isObject, runJob } from "../utils";
 import { BPlusTree, Key } from "./bp_tree";
 import { Database } from "./database";
 import { ExtractFieldSchemaType, FieldSchema, FieldSchemaType } from "./schema";
@@ -45,6 +45,10 @@ export interface ModelPlan<M extends Model, K extends keyof M = keyof M> {
     index: BPlusTree<ModelData<M>> | undefined;
 }
 
+export enum TableOperationError {
+    InvalidWriteData,
+}
+
 export class Table<M extends Model> {
     private __indices = new Map<keyof M, BPlusTree<ModelData<M>>>();
     private __container = {
@@ -87,8 +91,7 @@ export class Table<M extends Model> {
         for (const row of this.__container.rows) {
             tree.add(
                 new Key(
-                    row[field] as number,
-                    /* TODO: use its own schema to convert values to key representations */
+                    row[field],
                     /* TODO: use primary keys as the secondary value in the key */
                 ),
                 row,
@@ -119,7 +122,7 @@ export class Table<M extends Model> {
             if (!field.index) field.index = this.__indices.get(key);
             field.index?.add(
                 new Key(
-                    data[key] as number,
+                    data[key],
                     /* TODO: use its own schema to convert values to key representations */
                     /* TODO: use primary keys as the secondary value in the key */
                 ),
@@ -140,24 +143,26 @@ export class Table<M extends Model> {
         runJob(bulk());
     }
 
-    public write(data: Partial<ModelData<M>>) {
+    public write(
+        data: Partial<ModelData<M>>,
+    ): Result<void, TableOperationError> {
         // TODO: use Result<_, _>
-        if (!this.validate(data)) return;
+        if (!this.validate(data))
+            return Result.Err(TableOperationError.InvalidWriteData);
 
         const row = this.normalize(data);
         this.store(row);
+
+        return Result.Ok(undefined);
     }
 
     public bulkWrite(data: Partial<ModelData<M>>[]) {
         const write = this.write.bind(this);
         function* bulk() {
-            for (const row of data) {
-                write(row);
-                yield;
-            }
+            for (const row of data) yield write(row);
         }
 
-        runJob(bulk());
+        return runJob(bulk());
     }
 
     public validate(value: any): boolean {

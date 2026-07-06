@@ -33,9 +33,15 @@ export class BPlusTree<T> {
         return this;
     }
 
-    public find(min: number, max: number = min + 1): [key: Key, data: T][] {
+    public find(min: any, max?: any): [key: Key, data: T][] {
         const less = this.root.find(new Key(min), Approximation.ExactOrGreater),
-            greater = this.root.find(new Key(max), Approximation.ExactOrLess);
+            greater = this.root.find(
+                max ? new Key(max) : new Key(min),
+                max ? Approximation.Less : Approximation.Greater,
+            );
+
+        console.log(less?.[1], greater?.[1]);
+        console.log(less?.[0], greater?.[0]);
 
         const entries: [Key, T][] = [];
         let curr: LeafNode<T> | null = less?.[1] ?? null;
@@ -79,20 +85,36 @@ export enum Approximation {
     Greater,
 }
 
-export class Key<T extends number = number> {
+export class Key {
     public constructor(
-        public primary: number,
-        public readonly secondary?: T,
+        public primary: any,
+        public readonly secondary?: any,
     ) {}
 
     public repr(): string {
         return `${this.primary}${this.secondary ? `_${this.secondary}` : ""}`;
     }
 
-    public compare(other: Key): number {
-        if (this.primary != other.primary) return this.primary - other.primary;
+    protected compareValues(a: any, b: any): -1 | 0 | 1 {
+        if (typeof a !== typeof b)
+            throw new Error("two values of different types are incomparable");
+
+        if (a instanceof Date && b instanceof Date) {
+            const diff = a.getTime() - b.getTime();
+            return diff < 0 ? -1 : diff > 0 ? 1 : 0;
+        }
+
+        if (a < b) return -1;
+        if (a > b) return 1;
+
+        return 0;
+    }
+
+    public compare(other: Key): -1 | 0 | 1 {
+        if (this.primary !== other.primary)
+            return this.compareValues(this.primary, other.primary);
         return this.secondary && other.secondary
-            ? this.secondary - other.secondary
+            ? this.compareValues(this.secondary, other.secondary)
             : 0;
     }
 }
@@ -215,6 +237,7 @@ export class LeafNode<T> extends Node<T> {
         while (left <= right) {
             const mid = (left + right) >> 1;
             const cmp = this.keys[mid].compare(key);
+            console.log(this.keys[mid], key, cmp);
 
             if (cmp === 0) return mid;
             cmp < 0 ? (left = mid + 1) : (right = mid - 1);
@@ -407,7 +430,10 @@ export class LeafNode<T> extends Node<T> {
                 return pos > 0 ? [pos, this] : undefined;
             case Approximation.Greater: {
                 const idx = exact ? pos + 1 : pos;
-                return pos < this.keys.length ? [idx, this] : undefined;
+                console.log("idx", idx);
+                console.log(exact);
+                console.log(key, this.keys[pos]);
+                return idx < this.keys.length ? [idx, this] : undefined;
             }
         }
     }
@@ -452,13 +478,14 @@ export class InternalNode<T> extends Node<T> {
         return Math.floor(this.n / 2);
     }
 
-    public add(key: Key, data: T): InternalNode<T> {
+    public add(key: Key, data: T): Node<T> {
         const pos = this.findChildPos(key);
-        const child = this.children[pos].add(key, data);
+        const child = this.children[pos].add(key as Key, data);
 
         child.currentIndex = pos;
 
-        if (child === this.children[pos]) return this;
+        if (child === this.children[pos] || !(child instanceof InternalNode))
+            return this as Node<T>;
 
         const node = child as InternalNode<T>;
 

@@ -21,29 +21,23 @@ function main(): void {
             default: () => counter++,
         }),
         name: new FieldSchema(schemas.String, {
+            isNonNull: true,
             check: (data) => data.length <= 64,
         }),
-        price: new FieldSchema(schemas.Float),
+        price: new FieldSchema(schemas.Float, { isNonNull: true }),
         description: new FieldSchema(schemas.String, {
             check: (data) => data.length <= 256,
         }),
     });
 
     table.createIndex("id");
+    table.createIndex("price");
 
     table.bulkWrite([
-        {
-            name: "test",
-            price: 12.8,
-        },
-        {
-            name: "bread",
-            price: 1.0,
-        },
+        { name: "not test", price: 12.8 },
+        { name: "test", price: 1.0 },
+        { name: "test", price: 120 },
     ]);
 
     console.log(table);
-
-    // @ts-expect-error
-    console.log(table.__container.rows);
 }
