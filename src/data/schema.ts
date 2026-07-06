@@ -1,55 +1,83 @@
-import { Result } from "../utils";
-import { isNumber, isString, isUndefined } from "../utils/validator";
+import { Result, isNumber, isString, isUndefined } from "../utils";
 
-export type FieldSchemaOptions<T extends FieldSchemaType<any>> = ({
-    isPrimary: true; isUnique?: never; isNonNull?: never
-} | {
-    isPrimary?: never,
-    isUnique?: boolean
-    isNonNull?: boolean,
-}) & Partial<Omit<FieldSchemaConfig<T>, "isUnique" | "isNonNull">>
+export type FieldSchemaDefault<T extends FieldSchemaType<any>> =
+    (() => ExtractFieldSchemaTypeValueType<T>) | null;
+export type FieldSchemaCheck<T extends FieldSchemaType<any>> = (
+    value: ExtractFieldSchemaTypeValueType<T>,
+) => boolean;
 
-export interface FieldSchemaConfig<T extends FieldSchemaType<any>, VT extends ExtractFieldSchemaTypeValueType<T> = ExtractFieldSchemaTypeValueType<T>> {
-    isPrimary: boolean,
-    isUnique: boolean,
-    isNonNull: boolean,
-    default: (() => VT) | null,
-    check: (data: VT) => boolean,
+export interface FieldSchemaConfig<
+    T extends FieldSchemaType<any>,
+    TNonNull extends boolean = boolean,
+    TDefault extends FieldSchemaDefault<T> = FieldSchemaDefault<T>,
+> {
+    primary: boolean;
+    nonNull: TNonNull;
+    default: TDefault;
+    check: FieldSchemaCheck<T>;
 }
 
-export type ExtractFieldSchemaType<T> = T extends FieldSchema<infer FT> ? FT : never
-export type ExtractFieldSchemaTypeValueType<T> = T extends FieldSchemaType<infer U> ? U : never
+export type ExtractFieldSchemaType<T> =
+    T extends FieldSchema<infer FT> ? FT : never;
+export type ExtractFieldSchemaTypeValueType<T> =
+    T extends FieldSchemaType<infer U> ? U : never;
 
-export class FieldSchema<T extends FieldSchemaType<any>> {
-    public readonly config: Required<FieldSchemaConfig<T>>;
-    public constructor(public readonly type: T, options?: FieldSchemaOptions<T>) {
-        this.config = {
-            ... (options && "isPrimary" in options ? { isPrimary: true, isUnique: true, isNonNull: true } : {
-                isPrimary: false,
-                isUnique: (options as any | undefined)?.isUnique ?? false,
-                isNonNull: (options as any | undefined)?.isNonNull ?? false,
-            }),
+export class FieldSchema<
+    T extends FieldSchemaType<any>,
+    TNonNull extends boolean = false,
+    TDefault extends FieldSchemaDefault<T> = FieldSchemaDefault<T>,
+> {
+    public constructor(
+        public readonly type: T,
+        private __config: FieldSchemaConfig<T, TNonNull, TDefault> = {
+            primary: false,
+            nonNull: false as TNonNull,
+            default: null as TDefault,
+            check: (() => true) as FieldSchemaCheck<T>,
+        },
+    ) {}
 
-            default: options?.default ?? null,
-            check: options?.check ?? (() => true),
-        }
+    public get config() {
+        return this.__config;
+    }
+
+    public primaryKey(): FieldSchema<T, true, TDefault> {
+        this.__config.primary = true;
+        this.__config.nonNull = true as TNonNull;
+
+        return this as FieldSchema<T, true, TDefault>;
+    }
+
+    public nonNull() {
+        this.__config.nonNull = true as TNonNull;
+        return this as FieldSchema<T, true, TDefault>;
+    }
+
+    public default<F extends NonNullable<FieldSchemaDefault<T>>>(fn: F) {
+        return new FieldSchema<T, TNonNull, F>(this.type, {
+            ...this.__config,
+            default: fn,
+        });
+    }
+
+    public check(fn: FieldSchemaCheck<T>) {
+        this.__config.check = fn;
+        return this;
     }
 
     public validate(value: any): boolean {
         return (
             // Null value guard clause
-            (this.config.isNonNull ? !isUndefined(value) : true)
-
+            (this.__config.nonNull ? !isUndefined(value) : true) &&
             // Type guard clause
-            && this.type.validate(value)
-
+            this.type.validate(value) &&
             // Additional check function
-            && this.config.check(value)
+            this.__config.check(value)
         );
     }
 }
 
-export class FieldSchemaTypeError extends Error { }
+export class FieldSchemaTypeError extends Error {}
 export type FieldSchemaConversionResult<T> = Result<T, FieldSchemaTypeError>;
 
 export abstract class FieldSchemaType<T> {
@@ -57,34 +85,56 @@ export abstract class FieldSchemaType<T> {
     public abstract from(value: any): FieldSchemaConversionResult<T>;
 }
 
-export namespace schemas {
-    export const String = new class StringSchemaType extends FieldSchemaType<string> {
+const intSchemaType = new (class IntSchemaType extends FieldSchemaType<number> {
+    public validate(value: any): value is number {
+        return isNumber(value, true);
+    }
+
+    public from(value: any): FieldSchemaConversionResult<number> {
+        return isUndefined(value)
+            ? Result.Ok(0)
+            : isString(value)
+              ? Result.Ok(parseInt(value))
+              : Result.Err(
+                    new FieldSchemaTypeError(
+                        "cannot convert unknown type to int",
+                    ),
+                );
+    }
+})();
+
+const stringSchemaType =
+    new (class StringSchemaType extends FieldSchemaType<string> {
         public validate(value: any): value is string {
-            return isString(value)
+            return isString(value);
         }
 
         public from(value: any): FieldSchemaConversionResult<string> {
-            return Result.Ok(isUndefined(value) ? `{value}` : (value.toString() as string))
+            return Result.Ok(
+                isUndefined(value) ? `{value}` : (value.toString() as string),
+            );
         }
-    }
+    })();
 
-    export const Int = new class IntSchemaType extends FieldSchemaType<number> {
+const floatSchemaType =
+    new (class FloatSchemaType extends FieldSchemaType<number> {
         public validate(value: any): value is number {
-            return isNumber(value, true)
+            return isNumber(value);
         }
 
         public from(value: any): FieldSchemaConversionResult<number> {
-            return isUndefined(value) ? Result.Ok(0) : isString(value) ? Result.Ok(parseInt(value)) : Result.Err(new FieldSchemaTypeError("cannot convert unknown type to int"))
+            return isUndefined(value)
+                ? Result.Ok(0)
+                : isString(value)
+                  ? Result.Ok(parseFloat(value))
+                  : Result.Err(
+                        new FieldSchemaTypeError(
+                            "cannot convert unknown type to float",
+                        ),
+                    );
         }
-    }
+    })();
 
-    export const Float = new class FloatSchemaType extends FieldSchemaType<number> {
-        public validate(value: any): value is number {
-            return isNumber(value)
-        }
-
-        public from(value: any): FieldSchemaConversionResult<number> {
-            return isUndefined(value) ? Result.Ok(0) : isString(value) ? Result.Ok(parseInt(value)) : Result.Err(new FieldSchemaTypeError("cannot convert unknown type to float"))
-        }
-    }
-}
+export const int = () => new FieldSchema(intSchemaType);
+export const string = () => new FieldSchema(stringSchemaType);
+export const float = () => new FieldSchema(floatSchemaType);

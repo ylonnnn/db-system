@@ -1,7 +1,14 @@
-import { Option, Result, isObject, runJob } from "../utils";
+import { Option, PartialBy, Result, isObject, runJob } from "../utils";
 import { BPlusTree, Key } from "./bp_tree";
 import { Database } from "./database";
-import { ExtractFieldSchemaType, FieldSchema, FieldSchemaType } from "./schema";
+import type {
+    Model,
+    ModelData,
+    ModelDataContainer,
+    ModelNullableField,
+    ModelOptionalField,
+    ModelPlan,
+} from "./model";
 
 export class TableMap {
     protected _data: Map<string, Table<any>>;
@@ -10,39 +17,16 @@ export class TableMap {
         this._data = new Map();
     }
 
-    public create<T extends Model>(name: string, model: T) {
-        const table = new Table(name, model);
+    public create<M extends Model>(name: string, model: M) {
+        const table = new Table<M>(name, model);
         this._data.set(name, table);
 
         return table;
     }
 
-    public get<T extends Model>(name: string): Option<Table<T>> {
+    public get<M extends Model>(name: string): Option<Table<M>> {
         return new Option(this._data.get(name));
     }
-}
-
-export type Model = Record<string, FieldSchema<any>>;
-export type ExtractModel<T> = T extends Table<infer M> ? M : never;
-
-export type ModelData<M extends Model> = {
-    [K in keyof M]: ExtractFieldSchemaType<M[K]> extends FieldSchemaType<
-        infer T
-    >
-        ? T | null
-        : never;
-};
-
-export interface ModelDataContainer<M extends Model> {
-    columns: { [K in keyof ModelData<M>]: ModelData<M>[K][] };
-    rows: ModelData<M>[];
-}
-
-export interface ModelPlan<M extends Model, K extends keyof M = keyof M> {
-    key: K;
-    column: ModelData<M>[K][];
-    default: (() => ModelData<M>[K]) | null;
-    index: BPlusTree<ModelData<M>> | undefined;
 }
 
 export enum TableOperationError {
@@ -64,7 +48,7 @@ export class Table<M extends Model> {
         let hasPrimary = false;
         for (const key in this.model) {
             const field = this.model[key];
-            hasPrimary ||= field.config.isPrimary;
+            hasPrimary ||= field.config.primary;
 
             this.__container.columns[key] = [] as any[];
             this.__plan.push({
@@ -80,9 +64,6 @@ export class Table<M extends Model> {
 
     public createIndex<K extends keyof M>(field: K) {
         if (this.__indices.has(field)) return;
-
-        // TODO: allow any kind of field to be used as keys
-        // for the B+ tree.
 
         const tree = new BPlusTree<ModelData<M>>(
             Database.MAXIMUM_INDEX_KEY_COUNT,
@@ -101,62 +82,47 @@ export class Table<M extends Model> {
         this.__indices.set(field, tree);
     }
 
-    protected normalize(data: Partial<ModelData<M>>): ModelData<M> {
-        for (const key in this.model)
-            data[key] =
-                ((data[key] ?? this.model[key].config.default?.()) as any) ??
-                null;
-
-        return data as ModelData<M>;
-    }
-
-    protected store(data: ModelData<M>) {
-        this.__container.rows.push(data);
-
+    protected store(data: PartialBy<ModelData<M>, ModelOptionalField<M>>) {
+        const row = data as ModelData<M>;
         for (let i = 0; i < this.__plan.length; ++i) {
             const field = this.__plan[i];
             const { key, column, default: def } = field;
 
-            column.push(data[key] ?? (def?.() as any) ?? null);
+            column.push((row[key] ??= (def?.() as any) ?? null));
 
             if (!field.index) field.index = this.__indices.get(key);
             field.index?.add(
                 new Key(
-                    data[key],
-                    /* TODO: use its own schema to convert values to key representations */
+                    row[key],
                     /* TODO: use primary keys as the secondary value in the key */
                 ),
-                data,
+                row,
             );
         }
+
+        this.__container.rows.push(row);
     }
 
-    protected bulkStore(data: ModelData<M>[]) {
+    protected bulkStore(
+        data: PartialBy<ModelData<M>, ModelOptionalField<M>>[],
+    ) {
         const store = this.store.bind(this);
         function* bulk() {
-            for (const row of data) {
-                store(row);
-                yield;
-            }
+            for (const row of data) yield store(row);
         }
 
         runJob(bulk());
     }
 
     public write(
-        data: Partial<ModelData<M>>,
+        data: PartialBy<ModelData<M>, ModelOptionalField<M>>,
     ): Result<void, TableOperationError> {
-        // TODO: use Result<_, _>
-        if (!this.validate(data))
-            return Result.Err(TableOperationError.InvalidWriteData);
-
-        const row = this.normalize(data);
-        this.store(row);
-
-        return Result.Ok(undefined);
+        return this.validate(data)
+            ? Result.Ok(this.store(data))
+            : Result.Err(TableOperationError.InvalidWriteData);
     }
 
-    public bulkWrite(data: Partial<ModelData<M>>[]) {
+    public bulkWrite(data: PartialBy<ModelData<M>, ModelOptionalField<M>>[]) {
         const write = this.write.bind(this);
         function* bulk() {
             for (const row of data) yield write(row);
@@ -180,7 +146,7 @@ export class Table<M extends Model> {
         for (const missingField of fields) {
             const field = this.model[missingField];
 
-            if (field.config.isNonNull) {
+            if (field.config.nonNull) {
                 // Check first if the field will have a default value.
                 // Otherwise, the value will be invalidated due to a missing field
                 if (field.config.default == null) return false;

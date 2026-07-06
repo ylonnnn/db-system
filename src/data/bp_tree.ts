@@ -40,9 +40,6 @@ export class BPlusTree<T> {
                 max ? Approximation.Less : Approximation.Greater,
             );
 
-        console.log(less?.[1], greater?.[1]);
-        console.log(less?.[0], greater?.[0]);
-
         const entries: [Key, T][] = [];
         let curr: LeafNode<T> | null = less?.[1] ?? null;
 
@@ -237,7 +234,6 @@ export class LeafNode<T> extends Node<T> {
         while (left <= right) {
             const mid = (left + right) >> 1;
             const cmp = this.keys[mid].compare(key);
-            console.log(this.keys[mid], key, cmp);
 
             if (cmp === 0) return mid;
             cmp < 0 ? (left = mid + 1) : (right = mid - 1);
@@ -412,7 +408,7 @@ export class LeafNode<T> extends Node<T> {
         approximation: Approximation = Approximation.ExactOnly,
     ): [index: number, node: LeafNode<T>] | undefined {
         const pos = this.findLowerBound(key);
-        if (pos >= this.keys.length) return undefined;
+        if (pos < 0 || pos >= this.keys.length) return undefined;
 
         const exact = this.keys[pos].compare(key) === 0;
         switch (approximation) {
@@ -430,9 +426,6 @@ export class LeafNode<T> extends Node<T> {
                 return pos > 0 ? [pos, this] : undefined;
             case Approximation.Greater: {
                 const idx = exact ? pos + 1 : pos;
-                console.log("idx", idx);
-                console.log(exact);
-                console.log(key, this.keys[pos]);
                 return idx < this.keys.length ? [idx, this] : undefined;
             }
         }
