@@ -33,26 +33,44 @@ export class BPlusTree<T> {
         return this;
     }
 
-    public find(min: any, max?: any): [key: Key, data: T][] {
+    // public find(min: any, max?: any): [key: Key, data: T][] {
+    //     const less = this.root.find(new Key(min), Approximation.ExactOrGreater),
+    //         greater = this.root.find(
+    //             max ? new Key(max) : new Key(min),
+    //             max ? Approximation.Less : Approximation.Greater,
+    //         );
+
+    //     const entries: [Key, T][] = [];
+    //     let curr: LeafNode<T> | null = less?.[1] ?? null;
+
+    //     while (curr !== null) {
+    //         const start = curr === less?.[1] ? less[0] : 0,
+    //             end = curr === greater?.[1] ? greater?.[0] : curr.keyCount();
+    //         for (let i = start; i < end; ++i) entries.push(curr.entry(i));
+
+    //         if (curr === greater?.[1]) break;
+    //         curr = curr.next;
+    //     }
+
+    //     return entries;
+    // }
+
+    public *find(min: any, max?: any) {
         const less = this.root.find(new Key(min), Approximation.ExactOrGreater),
             greater = this.root.find(
                 max ? new Key(max) : new Key(min),
                 max ? Approximation.Less : Approximation.Greater,
             );
 
-        const entries: [Key, T][] = [];
         let curr: LeafNode<T> | null = less?.[1] ?? null;
-
         while (curr !== null) {
             const start = curr === less?.[1] ? less[0] : 0,
                 end = curr === greater?.[1] ? greater?.[0] : curr.keyCount();
-            for (let i = start; i < end; ++i) entries.push(curr.entry(i));
+            for (let i = start; i < end; ++i) yield curr.entry(i);
 
             if (curr === greater?.[1]) break;
             curr = curr.next;
         }
-
-        return entries;
     }
 }
 

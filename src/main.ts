@@ -5,6 +5,7 @@ import {
     int,
     ModelOptionalField,
     ModelRequiredField,
+    query,
     string,
 } from "./data";
 
@@ -25,9 +26,24 @@ function main(): void {
     table.createIndex("id");
     table.createIndex("price");
 
-    table.bulkWrite([
-        { name: "test 0", price: 12.8 },
-        { name: "test 1", price: 1.0 },
-        { name: "test 2", price: 120 },
-    ]);
+    table.bulkWrite(
+        Array(4096)
+            .fill(null)
+            .map((_, i) => {
+                const price = Math.random() * 5000;
+                return {
+                    name: `test ${i}`,
+                    price: Math.random() < 0.5 ? price : Math.round(price),
+                };
+            }),
+    );
+
+    const result = [
+        ...table.query({
+            price: query.predicate((val) => val >= 2750),
+            id: query.range(10, 250),
+        }),
+    ];
+
+    console.log(result, result.length);
 }

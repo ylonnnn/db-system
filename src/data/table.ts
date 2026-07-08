@@ -5,7 +5,6 @@ import type {
     Model,
     ModelData,
     ModelDataContainer,
-    ModelNullableField,
     ModelOptionalField,
     ModelPlan,
 } from "./model";
@@ -131,6 +130,81 @@ export class Table<M extends Model> {
         return runJob(bulk());
     }
 
+    public *query(options: TableDataQueryOptions<M>) {
+        const seekable: [keyof M, TableDataQueryFieldOption<any>][] = [];
+        const residual: [keyof M, TableDataQueryFieldOption<any>][] = [];
+
+        for (const { key, index } of this.__plan) {
+            const fieldQuery = options[key];
+            if (!fieldQuery) continue;
+
+            const pair = [key, fieldQuery] as [
+                keyof M,
+                TableDataQueryFieldOption<any>,
+            ];
+
+            fieldQuery[0] !== TableDataQueryOperation.Predicate && index
+                ? seekable.push(pair)
+                : residual.push(pair);
+        }
+
+        seekable.sort(
+            (a, b) =>
+                this.model[b[0]].prioritization(b[1][0]) -
+                this.model[a[0]].prioritization(a[1][0]),
+        );
+
+        // TEMP: TODO: improve lookup, use a table of frequency distribution of values
+        const [candidate] = seekable;
+        const fieldQuery = options[candidate[0]]!,
+            [op] = fieldQuery;
+
+        const candidateIndex = this.__indices.get(seekable[0][0])!;
+        let result!: [Key, ModelData<M>][];
+        switch (op) {
+            case TableDataQueryOperation.Eq: {
+                const [, val] = fieldQuery;
+                result = runJob(candidateIndex.find(val));
+                break;
+            }
+
+            case TableDataQueryOperation.Range: {
+                const [, min, max] = fieldQuery;
+                result = runJob(candidateIndex.find(min, max));
+                break;
+            }
+
+            case TableDataQueryOperation.Within:
+                // TODO
+                throw new Error("todo");
+        }
+
+        const comparators = seekable
+            .slice(1)
+            .concat(residual)
+            .map(([field, query]) => {
+                const [op] = query;
+                return {
+                    field,
+                    cmp: {
+                        [TableDataQueryOperation.Eq]: (x: any) =>
+                            x === query[1],
+                        [TableDataQueryOperation.Range]: (x: any) =>
+                            x >= query[1] && x < query[2],
+                        [TableDataQueryOperation.Within]: (x: any) =>
+                            query[1].includes(x),
+                        [TableDataQueryOperation.Predicate]: (x: any) =>
+                            query[1](x),
+                    }[op],
+                };
+            });
+
+        for (const val of result) {
+            if (comparators.every(({ field, cmp }) => cmp(val[1][field])))
+                yield val;
+        }
+    }
+
     public validate(value: any): boolean {
         if (!isObject(value)) return false;
 
@@ -156,4 +230,43 @@ export class Table<M extends Model> {
 
         return true;
     }
+}
+
+export enum TableDataQueryOperation {
+    Eq,
+    Range,
+    Within,
+    Predicate,
+}
+
+export type TableDataQueryFieldOption<T> =
+    | [op: TableDataQueryOperation.Eq, value: T]
+    | [op: TableDataQueryOperation.Range, min: T, max: T]
+    | [op: TableDataQueryOperation.Within, values: T[]]
+    | [op: TableDataQueryOperation.Predicate, predicate: (val: T) => boolean];
+
+export type TableDataQueryOptions<M extends Model> = {
+    [K in keyof M]?: TableDataQueryFieldOption<ModelData<M>[K]>;
+};
+
+export namespace query {
+    export const eq = <T>(val: T): TableDataQueryFieldOption<T> => [
+        TableDataQueryOperation.Eq,
+        val,
+    ];
+    export const range = <T>(min: T, max: T): TableDataQueryFieldOption<T> => [
+        TableDataQueryOperation.Range,
+        min,
+        max,
+    ];
+    export const within = <T>(values: T[]): TableDataQueryFieldOption<T> => [
+        TableDataQueryOperation.Within,
+        values,
+    ];
+    export const predicate = <T>(
+        predicate: (val: T) => boolean,
+    ): TableDataQueryFieldOption<T> => [
+        TableDataQueryOperation.Predicate,
+        predicate,
+    ];
 }

@@ -1,4 +1,5 @@
 import { Result, isNumber, isString, isUndefined } from "../utils";
+import { TableDataQueryOperation } from "./table";
 
 export type FieldSchemaDefault<T extends FieldSchemaType<any>> =
     (() => ExtractFieldSchemaTypeValueType<T>) | null;
@@ -12,6 +13,7 @@ export interface FieldSchemaConfig<
     TDefault extends FieldSchemaDefault<T> = FieldSchemaDefault<T>,
 > {
     primary: boolean;
+    unique: boolean;
     nonNull: TNonNull;
     default: TDefault;
     check: FieldSchemaCheck<T>;
@@ -31,6 +33,7 @@ export class FieldSchema<
         public readonly type: T,
         private __config: FieldSchemaConfig<T, TNonNull, TDefault> = {
             primary: false,
+            unique: false,
             nonNull: false as TNonNull,
             default: null as TDefault,
             check: (() => true) as FieldSchemaCheck<T>,
@@ -41,11 +44,28 @@ export class FieldSchema<
         return this.__config;
     }
 
+    public prioritization(op: TableDataQueryOperation) {
+        if (op === TableDataQueryOperation.Predicate) return 0;
+
+        const { primary, unique, nonNull } = this.__config;
+        return (
+            Number(nonNull) +
+            (unique ? (op === TableDataQueryOperation.Eq ? 4 : 2) : 0) +
+            Number(primary)
+        );
+    }
+
     public primaryKey(): FieldSchema<T, true, TDefault> {
         this.__config.primary = true;
+        this.__config.unique = true;
         this.__config.nonNull = true as TNonNull;
 
         return this as FieldSchema<T, true, TDefault>;
+    }
+
+    public unique() {
+        this.__config.unique = true;
+        return this;
     }
 
     public nonNull() {
