@@ -9,10 +9,11 @@ export type FieldSchemaCheck<T extends FieldSchemaType<any>> = (
 
 export interface FieldSchemaConfig<
     T extends FieldSchemaType<any>,
+    TPrimary extends boolean = false,
     TNonNull extends boolean = boolean,
     TDefault extends FieldSchemaDefault<T> = FieldSchemaDefault<T>,
 > {
-    primary: boolean;
+    primary: TPrimary;
     unique: boolean;
     nonNull: TNonNull;
     default: TDefault;
@@ -26,13 +27,14 @@ export type ExtractFieldSchemaTypeValueType<T> =
 
 export class FieldSchema<
     T extends FieldSchemaType<any>,
+    TPrimary extends boolean = false,
     TNonNull extends boolean = false,
     TDefault extends FieldSchemaDefault<T> = FieldSchemaDefault<T>,
 > {
     public constructor(
         public readonly type: T,
-        private __config: FieldSchemaConfig<T, TNonNull, TDefault> = {
-            primary: false,
+        private __config: FieldSchemaConfig<T, TPrimary, TNonNull, TDefault> = {
+            primary: false as TPrimary,
             unique: false,
             nonNull: false as TNonNull,
             default: null as TDefault,
@@ -55,32 +57,34 @@ export class FieldSchema<
         );
     }
 
-    public primaryKey(): FieldSchema<T, true, TDefault> {
-        this.__config.primary = true;
+    public primaryKey(): FieldSchema<T, true, true, TDefault> {
+        this.__config.primary = true as TPrimary;
         this.__config.unique = true;
         this.__config.nonNull = true as TNonNull;
 
-        return this as FieldSchema<T, true, TDefault>;
+        return this as FieldSchema<T, true, true, TDefault>;
     }
 
-    public unique() {
+    public unique(): FieldSchema<T, TPrimary, TNonNull, TDefault> {
         this.__config.unique = true;
         return this;
     }
 
-    public nonNull() {
+    public nonNull(): FieldSchema<T, TPrimary, true, TDefault> {
         this.__config.nonNull = true as TNonNull;
-        return this as FieldSchema<T, true, TDefault>;
+        return this as FieldSchema<T, TPrimary, true, TDefault>;
     }
 
     public default<F extends NonNullable<FieldSchemaDefault<T>>>(fn: F) {
-        return new FieldSchema<T, TNonNull, F>(this.type, {
+        return new FieldSchema<T, TPrimary, TNonNull, F>(this.type, {
             ...this.__config,
             default: fn,
         });
     }
 
-    public check(fn: FieldSchemaCheck<T>) {
+    public check(
+        fn: FieldSchemaCheck<T>,
+    ): FieldSchema<T, TPrimary, TNonNull, TDefault> {
         this.__config.check = fn;
         return this;
     }

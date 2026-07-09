@@ -5,8 +5,10 @@ import type {
     Model,
     ModelData,
     ModelDataContainer,
+    ModelDataContainerRowCacheKey,
     ModelOptionalField,
     ModelPlan,
+    ModelPrimaryKey,
 } from "./model";
 
 export class TableMap {
@@ -36,18 +38,24 @@ export class Table<M extends Model> {
     private __indices = new Map<keyof M, BPlusTree<ModelData<M>>>();
     private __container = {
         columns: {},
-        rows: [] as ModelData<M>[],
+        rows: new Map(),
     } as ModelDataContainer<M>;
     private __plan: ModelPlan<M>[] = [];
+    private __primaryKey: ModelPrimaryKey<M> | undefined = undefined;
 
     public constructor(
         public readonly name: string,
         public readonly model: M,
     ) {
-        let hasPrimary = false;
+        let primaryKeyCount = 0;
         for (const key in this.model) {
             const field = this.model[key];
-            hasPrimary ||= field.config.primary;
+            if (field.config.primary) {
+                if (!this.__primaryKey)
+                    this.__primaryKey = key as unknown as ModelPrimaryKey<M>;
+
+                ++primaryKeyCount;
+            }
 
             this.__container.columns[key] = [] as any[];
             this.__plan.push({
@@ -58,7 +66,12 @@ export class Table<M extends Model> {
             });
         }
 
-        // TODO: handle models with no primary keys
+        if (primaryKeyCount > 1)
+            throw new Error(
+                "a Model cannot have more than one (1) independent primary key.",
+            );
+
+        if (this.__primaryKey) this.createIndex(this.__primaryKey);
     }
 
     public createIndex<K extends keyof M>(field: K) {
@@ -68,14 +81,8 @@ export class Table<M extends Model> {
             Database.MAXIMUM_INDEX_KEY_COUNT,
         );
 
-        for (const row of this.__container.rows) {
-            tree.add(
-                new Key(
-                    row[field],
-                    /* TODO: use primary keys as the secondary value in the key */
-                ),
-                row,
-            );
+        for (const [pk, row] of this.__container.rows) {
+            tree.add(new Key(row[field], pk), row);
         }
 
         this.__indices.set(field, tree);
@@ -93,13 +100,19 @@ export class Table<M extends Model> {
             field.index?.add(
                 new Key(
                     row[key],
-                    /* TODO: use primary keys as the secondary value in the key */
+                    this.__primaryKey ? row[this.__primaryKey] : undefined,
                 ),
                 row,
             );
         }
 
-        this.__container.rows.push(row);
+        this.__container.rows.set(
+            (this.__primaryKey
+                ? row[this.__primaryKey]
+                : this.__container.rows
+                      .size) as ModelDataContainerRowCacheKey<M>,
+            row,
+        );
     }
 
     protected bulkStore(
@@ -154,29 +167,38 @@ export class Table<M extends Model> {
                 this.model[a[0]].prioritization(a[1][0]),
         );
 
+        residual.sort(
+            (a, b) =>
+                this.model[b[0]].prioritization(b[1][0]) -
+                this.model[a[0]].prioritization(a[1][0]),
+        );
+
         // TEMP: TODO: improve lookup, use a table of frequency distribution of values
-        const [candidate] = seekable;
-        const fieldQuery = options[candidate[0]]!,
-            [op] = fieldQuery;
+        let result: ModelData<M>[] = [];
+        if (seekable.length <= 0) result = [...this.__container.rows.values()];
+        else {
+            const [candidate] = seekable;
+            const fieldQuery = options[candidate[0]]!,
+                [op] = fieldQuery;
 
-        const candidateIndex = this.__indices.get(seekable[0][0])!;
-        let result!: [Key, ModelData<M>][];
-        switch (op) {
-            case TableDataQueryOperation.Eq: {
-                const [, val] = fieldQuery;
-                result = runJob(candidateIndex.find(val));
-                break;
+            const candidateIndex = this.__indices.get(seekable[0][0])!;
+            switch (op) {
+                case TableDataQueryOperation.Eq: {
+                    const [, val] = fieldQuery;
+                    result = runJob(candidateIndex.find(val, undefined, false));
+                    break;
+                }
+
+                case TableDataQueryOperation.Range: {
+                    const [, min, max] = fieldQuery;
+                    result = runJob(candidateIndex.find(min, max, false));
+                    break;
+                }
+
+                case TableDataQueryOperation.Within:
+                    // TODO
+                    throw new Error("todo");
             }
-
-            case TableDataQueryOperation.Range: {
-                const [, min, max] = fieldQuery;
-                result = runJob(candidateIndex.find(min, max));
-                break;
-            }
-
-            case TableDataQueryOperation.Within:
-                // TODO
-                throw new Error("todo");
         }
 
         const comparators = seekable
@@ -200,8 +222,9 @@ export class Table<M extends Model> {
             });
 
         for (const val of result) {
-            if (comparators.every(({ field, cmp }) => cmp(val[1][field])))
+            if (comparators.every(({ field, cmp }) => cmp(val[field]))) {
                 yield val;
+            }
         }
     }
 

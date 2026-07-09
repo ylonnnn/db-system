@@ -1,4 +1,5 @@
 import { Result } from "../utils";
+import { ModelData } from "./model";
 
 export class BPlusTree<T> {
     private root: Node<T>;
@@ -55,7 +56,11 @@ export class BPlusTree<T> {
     //     return entries;
     // }
 
-    public *find(min: any, max?: any) {
+    public *find<K extends boolean = true>(
+        min: any,
+        max?: any,
+        withKeys: K = true as K,
+    ): Generator<K extends true ? [Key, T] : T> {
         const less = this.root.find(new Key(min), Approximation.ExactOrGreater),
             greater = this.root.find(
                 max ? new Key(max) : new Key(min),
@@ -66,21 +71,17 @@ export class BPlusTree<T> {
         while (curr !== null) {
             const start = curr === less?.[1] ? less[0] : 0,
                 end = curr === greater?.[1] ? greater?.[0] : curr.keyCount();
-            for (let i = start; i < end; ++i) yield curr.entry(i);
+            for (let i = start; i < end; ++i) {
+                const entry = curr.entry(i);
+                yield (withKeys ? entry : entry[1]) as K extends true
+                    ? [Key, T]
+                    : T;
+            }
 
             if (curr === greater?.[1]) break;
             curr = curr.next;
         }
     }
-}
-
-export enum Comparison {
-    Equal,
-    NotEqual,
-    Less,
-    LessEqual,
-    Greater,
-    GreaterEqual,
 }
 
 export enum Approximation {
