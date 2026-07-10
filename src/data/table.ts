@@ -127,6 +127,8 @@ export class Table<M extends Model> {
             const field = this.__plan[i];
             const { key, column, frequency, default: def } = field;
 
+            column.push((row[key] ??= (def?.() as any) ?? null));
+
             if (this.model[key].config.unique) {
                 const freq = frequency.get(row[key]) ?? 0;
                 if (freq >= 1)
@@ -134,8 +136,6 @@ export class Table<M extends Model> {
 
                 frequency.set(row[key], freq + 1);
             }
-
-            column.push((row[key] ??= (def?.() as any) ?? null));
 
             if (!field.index) field.index = this.__indices.get(key);
             field.index?.add(
@@ -275,8 +275,8 @@ export class Table<M extends Model> {
         function* bulk() {
             for (const row of data) {
                 const result = write(row);
-                if (result.isErr()) return result;
                 yield result;
+                if (result.isErr()) return;
             }
         }
 
@@ -285,10 +285,14 @@ export class Table<M extends Model> {
 
     public update(options: TableDataQueryOptions<M>, data: TableUpdateData<M>) {
         const query = this.query.bind(this),
-            { model, __frequency } = this;
+            cacheKey = this.cacheKey.bind(this),
+            { model, __container, __frequency } = this;
 
         function* update(): Generator<Result<void, TableOperationError>> {
-            for (const row of query(options)[1]) {
+            for (const pos of query(options, true)[1]) {
+                const ckey = cacheKey(pos),
+                    row = __container.rows.get(ckey)!;
+
                 for (const key in data) {
                     const provided = data[key];
                     const value = isFunction(provided)
@@ -312,6 +316,7 @@ export class Table<M extends Model> {
                     }
 
                     row[key] = value;
+                    __container.columns[key][pos] = value;
                     yield Result.Ok(undefined);
                 }
             }
@@ -347,7 +352,7 @@ export class Table<M extends Model> {
         epoch: number,
         result: Generator<P extends true ? number : ModelData<M>>,
     ] {
-        const seekable: [keyof M, TableDataQueryFieldOption<any>][] = [];
+        let seekable: [keyof M, TableDataQueryFieldOption<any>][] = [];
         const residual: [keyof M, TableDataQueryFieldOption<any>][] = [];
 
         for (const { key, index } of this.__plan) {
@@ -384,7 +389,24 @@ export class Table<M extends Model> {
                 for (let i = 0; i < n; ++i) yield i;
             })();
         } else {
-            const [candidate] = seekable;
+            const copy = [...seekable];
+            let candidate = copy.shift()!;
+
+            for (const current of copy) {
+                const [field] = current;
+                const candidateKeys = [
+                        ...this.__frequency[candidate[0]].keys(),
+                    ],
+                    currKeys = [...this.__frequency[field].keys()];
+
+                if (candidateKeys.length > currKeys.length)
+                    seekable.push(current);
+                else {
+                    candidate = current;
+                    seekable.push(candidate);
+                }
+            }
+
             const fieldQuery = options[candidate[0]]!,
                 [op] = fieldQuery;
 
@@ -408,25 +430,21 @@ export class Table<M extends Model> {
             }
         }
 
-        const comparators = seekable
-            .slice(1)
-            .concat(residual)
-            .map(([field, query]) => {
-                const [op] = query;
-                return {
-                    field,
-                    cmp: {
-                        [TableDataQueryOperation.Eq]: (x: any) =>
-                            x === query[1],
-                        [TableDataQueryOperation.Range]: (x: any) =>
-                            x >= query[1] && x < query[2],
-                        [TableDataQueryOperation.Within]: (x: any) =>
-                            query[1].includes(x),
-                        [TableDataQueryOperation.Predicate]: (x: any) =>
-                            query[1](x),
-                    }[op],
-                };
-            });
+        const comparators = seekable.concat(residual).map(([field, query]) => {
+            const [op] = query;
+            return {
+                field,
+                cmp: {
+                    [TableDataQueryOperation.Eq]: (x: any) => x === query[1],
+                    [TableDataQueryOperation.Range]: (x: any) =>
+                        x >= query[1] && x < query[2],
+                    [TableDataQueryOperation.Within]: (x: any) =>
+                        query[1].includes(x),
+                    [TableDataQueryOperation.Predicate]: (x: any) =>
+                        query[1](x),
+                }[op],
+            };
+        });
 
         const { __container, __primaryKey } = this;
         function* filter() {

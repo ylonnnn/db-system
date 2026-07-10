@@ -18,10 +18,9 @@ function main(): void {
     let counter = 0;
     const db = new Database("test");
     const table = db.tables.create("Product", {
-        // id: int()
-        //     .primaryKey()
-        // .default(() => counter++),
-        uid: string().primaryKey(),
+        id: int()
+            .primaryKey()
+            .default(() => counter++),
         name: string().nonNull(),
         description: string().check((value) => value.length <= 256),
         price: float().nonNull(),
@@ -41,18 +40,18 @@ function main(): void {
     // // @ts-expect-error
     // table.__container.rows.keys();
 
-    table.bulkWrite(
-        Array(10)
+    const result = table.bulkWrite(
+        Array(2 ** 16)
             .fill(null)
             .map((_, i) => {
                 const price = Math.random() * 5000;
                 return {
-                    uid: `UID_${i}`,
                     name: `test ${i}`,
                     price: Math.random() < 0.5 ? price : Math.round(price),
                 };
             }),
     );
+    console.log(result.filter((v) => v.isErr()));
 
     // const result = [
     //     ...table.query(
@@ -67,7 +66,10 @@ function main(): void {
     console.log([...table.query({})[1]].map((v) => JSON.stringify(v)));
 
     table.update(
-        { price: query.range(3000, 4500) },
+        {
+            id: query.range(10, 500),
+            price: query.range(3000, 4500),
+        },
         {
             // uid: "UID_2",
             name: (prevName) => `${prevName} [updated]`,
@@ -76,4 +78,9 @@ function main(): void {
     );
 
     console.log([...table.query({})[1]].map((v) => JSON.stringify(v)));
+
+    const [, qres] = table.query({
+        id: query.range(100, 32_000),
+    });
+    console.log([...qres].length);
 }
