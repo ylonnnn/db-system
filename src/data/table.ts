@@ -9,6 +9,7 @@ import type {
     ModelOptionalField,
     ModelPlan,
     ModelPrimaryKey,
+    ModelPrimaryKeyType,
 } from "./model";
 
 export class TableMap {
@@ -35,10 +36,13 @@ export enum TableOperationError {
 }
 
 export class Table<M extends Model> {
-    private __indices = new Map<keyof M, BPlusTree<ModelData<M>>>();
+    private __indices = new Map<keyof M, BPlusTree<number>>();
     private __container = {
+        epoch: 0,
         columns: {},
         rows: new Map(),
+        tombstone: new Uint8Array(),
+        dead: 0,
     } as ModelDataContainer<M>;
     private __plan: ModelPlan<M>[] = [];
     private __primaryKey: ModelPrimaryKey<M> | undefined = undefined;
@@ -51,9 +55,7 @@ export class Table<M extends Model> {
         for (const key in this.model) {
             const field = this.model[key];
             if (field.config.primary) {
-                if (!this.__primaryKey)
-                    this.__primaryKey = key as unknown as ModelPrimaryKey<M>;
-
+                this.__primaryKey = key as unknown as ModelPrimaryKey<M>;
                 ++primaryKeyCount;
             }
 
@@ -62,7 +64,9 @@ export class Table<M extends Model> {
                 key,
                 column: this.__container.columns[key],
                 default: field.config.default as (() => any) | null,
-                index: this.__indices.get(key),
+                index:
+                    (field.config.primary ? this.createIndex(key) : undefined,
+                    this.__indices.get(key)),
             });
         }
 
@@ -72,24 +76,36 @@ export class Table<M extends Model> {
             );
 
         if (this.__primaryKey) this.createIndex(this.__primaryKey);
+
+        // TODO: Load
+        // this.__container.tombstone = new Uint8Array(this.__container.rows.size)
     }
 
     public createIndex<K extends keyof M>(field: K) {
-        if (this.__indices.has(field)) return;
+        if (!this.__indices.has(field)) this.updateIndex(field);
+    }
 
-        const tree = new BPlusTree<ModelData<M>>(
-            Database.MAXIMUM_INDEX_KEY_COUNT,
-        );
+    public updateIndex<K extends keyof M>(field: K) {
+        const tree = new BPlusTree<number>(Database.MAXIMUM_INDEX_KEY_COUNT);
 
-        for (const [pk, row] of this.__container.rows) {
-            tree.add(new Key(row[field], pk), row);
-        }
+        let i = 0;
+        for (const [pk, row] of this.__container.rows)
+            tree.add(new Key(row[field], pk), i++);
 
         this.__indices.set(field, tree);
     }
 
+    protected cacheKey(idx: number): ModelDataContainerRowCacheKey<M> {
+        return (
+            this.__primaryKey
+                ? this.__container.columns[this.__primaryKey][idx]
+                : idx
+        ) as ModelDataContainerRowCacheKey<M>;
+    }
+
+    // TODO: handle duplicate values for fields that must be unique
     protected store(data: PartialBy<ModelData<M>, ModelOptionalField<M>>) {
-        const row = data as ModelData<M>;
+        const row = { ...data } as ModelData<M>;
         for (let i = 0; i < this.__plan.length; ++i) {
             const field = this.__plan[i];
             const { key, column, default: def } = field;
@@ -102,7 +118,7 @@ export class Table<M extends Model> {
                     row[key],
                     this.__primaryKey ? row[this.__primaryKey] : undefined,
                 ),
-                row,
+                this.__container.rows.size,
             );
         }
 
@@ -126,6 +142,100 @@ export class Table<M extends Model> {
         runJob(bulk());
     }
 
+    protected delete(
+        idx: number,
+        compact: boolean = true,
+        epoch: number = this.__container.epoch,
+    ) {
+        // To avoid using indices that were previously valid but got invalidated
+        if (epoch !== this.__container.epoch) return;
+
+        if (this.__container.tombstone.length < this.__container.rows.size) {
+            const newByteArr = new Uint8Array(this.__container.rows.size);
+            newByteArr.set(this.__container.tombstone);
+            this.__container.tombstone = newByteArr;
+        }
+
+        if (this.__container.tombstone[idx]) return;
+
+        this.__container.tombstone[idx] = 1;
+        ++this.__container.dead;
+
+        if (
+            compact &&
+            this.__container.dead / this.__container.rows.size >= 0.25
+        ) {
+            this.compact();
+            this.__container.dead = 0;
+        }
+    }
+
+    protected bulkDelete(
+        indices: number[],
+        epoch: number = this.__container.epoch,
+    ) {
+        // Avoid invalidated position deletion
+        if (epoch !== this.__container.epoch) return;
+
+        const del = this.delete.bind(this),
+            compact = this.compact.bind(this),
+            { __container } = this;
+
+        function* bulk() {
+            for (const idx of indices) yield del(idx, false, epoch);
+
+            compact();
+            __container.dead = 0;
+        }
+
+        runJob(bulk());
+    }
+
+    protected compact() {
+        const n = this.__container.rows.size;
+        let write = 0;
+
+        for (let read = 0; read < n; ++read) {
+            const readCacheKey = this.cacheKey(read),
+                writeCacheKey = this.cacheKey(write);
+
+            const indexBased = !this.__primaryKey;
+
+            if (this.__container.tombstone[read]) {
+                this.__container.tombstone[read] = 0;
+                if (!indexBased) this.__container.rows.delete(readCacheKey);
+                else {
+                    if (read + 1 < n)
+                        this.__container.rows.set(
+                            writeCacheKey,
+                            this.__container.rows.get(
+                                this.cacheKey(read + 1),
+                            ) as ModelData<M>,
+                        );
+                    else this.__container.rows.delete(writeCacheKey);
+                }
+
+                continue;
+            }
+
+            for (const key in this.model) {
+                this.__container.columns[key][write] =
+                    this.__container.columns[key][read];
+            }
+
+            ++write;
+        }
+
+        for (const key in this.model) {
+            const values = this.__container.columns[key];
+            values.splice(write);
+        }
+
+        ++this.__container.epoch;
+
+        for (const [field] of this.__indices) this.updateIndex(field);
+    }
+
     public write(
         data: PartialBy<ModelData<M>, ModelOptionalField<M>>,
     ): Result<void, TableOperationError> {
@@ -137,13 +247,28 @@ export class Table<M extends Model> {
     public bulkWrite(data: PartialBy<ModelData<M>, ModelOptionalField<M>>[]) {
         const write = this.write.bind(this);
         function* bulk() {
-            for (const row of data) yield write(row);
+            for (const row of data) {
+                const result = write(row);
+                if (result.isErr()) return result;
+                yield result;
+            }
         }
 
         return runJob(bulk());
     }
 
-    public *query(options: TableDataQueryOptions<M>) {
+    public erase(options: TableDataQueryOptions<M>) {
+        const [epoch, result] = this.query(options, true);
+        this.bulkDelete(runJob(result), epoch);
+    }
+
+    public query<P extends boolean = false>(
+        options: TableDataQueryOptions<M>,
+        asPos: P = false as P,
+    ): [
+        epoch: number,
+        result: Generator<P extends true ? number : ModelData<M>>,
+    ] {
         const seekable: [keyof M, TableDataQueryFieldOption<any>][] = [];
         const residual: [keyof M, TableDataQueryFieldOption<any>][] = [];
 
@@ -174,9 +299,13 @@ export class Table<M extends Model> {
         );
 
         // TEMP: TODO: improve lookup, use a table of frequency distribution of values
-        let result: ModelData<M>[] = [];
-        if (seekable.length <= 0) result = [...this.__container.rows.values()];
-        else {
+        let result!: Generator<number>;
+        if (seekable.length <= 0) {
+            const n = this.__container.rows.size;
+            result = (function* () {
+                for (let i = 0; i < n; ++i) yield i;
+            })();
+        } else {
             const [candidate] = seekable;
             const fieldQuery = options[candidate[0]]!,
                 [op] = fieldQuery;
@@ -185,13 +314,13 @@ export class Table<M extends Model> {
             switch (op) {
                 case TableDataQueryOperation.Eq: {
                     const [, val] = fieldQuery;
-                    result = runJob(candidateIndex.find(val, undefined, false));
+                    result = candidateIndex.find(val, undefined, false);
                     break;
                 }
 
                 case TableDataQueryOperation.Range: {
                     const [, min, max] = fieldQuery;
-                    result = runJob(candidateIndex.find(min, max, false));
+                    result = candidateIndex.find(min, max, false);
                     break;
                 }
 
@@ -221,11 +350,45 @@ export class Table<M extends Model> {
                 };
             });
 
-        for (const val of result) {
-            if (comparators.every(({ field, cmp }) => cmp(val[field]))) {
-                yield val;
+        const { __container, __primaryKey } = this;
+        function* filter() {
+            for (const pos of result) {
+                if (
+                    comparators.every(({ field, cmp }) =>
+                        cmp(__container.columns[field][pos]),
+                    )
+                ) {
+                    if (__container.tombstone[pos]) continue;
+                    yield (
+                        asPos
+                            ? pos
+                            : (__container.rows.get(
+                                  (__primaryKey
+                                      ? __container.columns[__primaryKey][pos]
+                                      : pos) as ModelDataContainerRowCacheKey<M>,
+                              ) as ModelData<M>)
+                    ) as P extends true ? number : ModelData<M>;
+                }
             }
         }
+
+        return [__container.epoch, filter()];
+    }
+
+    /**
+     * NOTE: This function does not have a constant time look-up due to
+     * the process of ensuring the validity of data.
+     */
+    public findByPk(pk: ModelPrimaryKeyType<M>): ModelData<M> | undefined {
+        if (!this.__primaryKey) return undefined;
+
+        const pos = [
+            ...this.__indices.get(this.__primaryKey)!.find(pk),
+        ][0]?.[1];
+
+        return pos !== undefined
+            ? this.__container.rows.get(this.cacheKey(pos))
+            : undefined;
     }
 
     public validate(value: any): boolean {

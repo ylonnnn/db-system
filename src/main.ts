@@ -15,9 +15,13 @@ import {
 main();
 
 function main(): void {
+    let counter = 0;
     const db = new Database("test");
     const table = db.tables.create("Product", {
-        storeId: string().primaryKey(),
+        // id: int()
+        //     .primaryKey()
+        // .default(() => counter++),
+        uid: string().primaryKey(),
         name: string().nonNull(),
         description: string().check((value) => value.length <= 256),
         price: float().nonNull(),
@@ -38,25 +42,27 @@ function main(): void {
     // table.__container.rows.keys();
 
     table.bulkWrite(
-        Array(4096)
+        Array(10)
             .fill(null)
             .map((_, i) => {
                 const price = Math.random() * 5000;
                 return {
-                    storeId: `STORE_ID:${i}`,
+                    uid: `UID_${i}`,
                     name: `test ${i}`,
                     price: Math.random() < 0.5 ? price : Math.round(price),
                 };
             }),
     );
 
-    const result = [
-        ...table.query({
-            price: query.predicate((v: number) => v >= 4000 && v <= 4250),
-        }),
-    ];
+    // const result = [
+    //     ...table.query(
+    //         {
+    //             // id: query.range(10, 500),
+    //             price: query.range(3500, 4000),
+    //         },
+    //         true,
+    //     ),
+    // ];
 
-    // table.erase({name})
-
-    console.log(result, result.length);
+    console.log([...table.query({ price: query.range(3000, 4000) })[1]]);
 }
