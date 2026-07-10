@@ -64,8 +64,16 @@ function main(): void {
     //     ),
     // ];
 
-    console.log([...table.query({})[1]].map((v) => v.uid));
-    table.clear();
+    console.log([...table.query({})[1]].map((v) => JSON.stringify(v)));
 
-    console.log([...table.query({})[1]].map((v) => v.uid));
+    table.update(
+        { price: query.range(3000, 4500) },
+        {
+            // uid: "UID_2",
+            name: (prevName) => `${prevName} [updated]`,
+            price: (prevPrice) => prevPrice * (Math.random() * 5) + 1,
+        },
+    );
+
+    console.log([...table.query({})[1]].map((v) => JSON.stringify(v)));
 }

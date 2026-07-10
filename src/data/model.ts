@@ -90,6 +90,7 @@ export type ModelDataContainerRowCacheKey<M extends Model> =
 export interface ModelPlan<M extends Model, K extends keyof M = keyof M> {
     key: K;
     column: ModelData<M>[K][];
+    frequency: Map<ModelData<M>[K], number>;
     default: (() => ModelData<M>[K]) | null;
     index: BPlusTree<number> | undefined;
 }

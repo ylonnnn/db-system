@@ -1,4 +1,11 @@
-import { Option, PartialBy, Result, isObject, runJob } from "../utils";
+import {
+    Option,
+    PartialBy,
+    Result,
+    isFunction,
+    isObject,
+    runJob,
+} from "../utils";
 import { BPlusTree, Key } from "./bp_tree";
 import { Database } from "./database";
 import type {
@@ -32,7 +39,8 @@ export class TableMap {
 }
 
 export enum TableOperationError {
-    InvalidWriteData,
+    InvalidData,
+    InvalidUpdateData,
 }
 
 export class Table<M extends Model> {
@@ -44,6 +52,9 @@ export class Table<M extends Model> {
         tombstone: new Uint8Array(),
         dead: 0,
     } as ModelDataContainer<M>;
+
+    private __frequency = {} as TableValueFrequency<M>;
+
     private __plan: ModelPlan<M>[] = [];
     private __primaryKey: ModelPrimaryKey<M> | undefined = undefined;
 
@@ -60,9 +71,11 @@ export class Table<M extends Model> {
             }
 
             this.__container.columns[key] = [] as any[];
+            this.__frequency[key] = new Map();
             this.__plan.push({
                 key,
                 column: this.__container.columns[key],
+                frequency: this.__frequency[key],
                 default: field.config.default as (() => any) | null,
                 index:
                     (field.config.primary ? this.createIndex(key) : undefined,
@@ -103,12 +116,24 @@ export class Table<M extends Model> {
         ) as ModelDataContainerRowCacheKey<M>;
     }
 
-    // TODO: handle duplicate values for fields that must be unique
-    protected store(data: PartialBy<ModelData<M>, ModelOptionalField<M>>) {
+    protected store(
+        data: PartialBy<ModelData<M>, ModelOptionalField<M>>,
+    ): Result<void, TableOperationError> {
+        if (!this.validate(data))
+            return Result.Err(TableOperationError.InvalidData);
+
         const row = { ...data } as ModelData<M>;
         for (let i = 0; i < this.__plan.length; ++i) {
             const field = this.__plan[i];
-            const { key, column, default: def } = field;
+            const { key, column, frequency, default: def } = field;
+
+            if (this.model[key].config.unique) {
+                const freq = frequency.get(row[key]) ?? 0;
+                if (freq >= 1)
+                    return Result.Err(TableOperationError.InvalidData);
+
+                frequency.set(row[key], freq + 1);
+            }
 
             column.push((row[key] ??= (def?.() as any) ?? null));
 
@@ -129,6 +154,8 @@ export class Table<M extends Model> {
                       .size) as ModelDataContainerRowCacheKey<M>,
             row,
         );
+
+        return Result.Ok(undefined);
     }
 
     protected bulkStore(
@@ -239,9 +266,8 @@ export class Table<M extends Model> {
     public write(
         data: PartialBy<ModelData<M>, ModelOptionalField<M>>,
     ): Result<void, TableOperationError> {
-        return this.validate(data)
-            ? Result.Ok(this.store(data))
-            : Result.Err(TableOperationError.InvalidWriteData);
+        // TODO: storage operations (e.g. saving the data, etc.)
+        return this.store(data);
     }
 
     public bulkWrite(data: PartialBy<ModelData<M>, ModelOptionalField<M>>[]) {
@@ -255,6 +281,43 @@ export class Table<M extends Model> {
         }
 
         return runJob(bulk());
+    }
+
+    public update(options: TableDataQueryOptions<M>, data: TableUpdateData<M>) {
+        const query = this.query.bind(this),
+            { model, __frequency } = this;
+
+        function* update(): Generator<Result<void, TableOperationError>> {
+            for (const row of query(options)[1]) {
+                for (const key in data) {
+                    const provided = data[key];
+                    const value = isFunction(provided)
+                        ? provided(row[key])
+                        : provided;
+
+                    const field = model[key];
+                    if (!field.validate(value))
+                        return Result.Err(
+                            TableOperationError.InvalidUpdateData,
+                        );
+
+                    // Handle invalid duplicates for unique fields
+                    if (field.config.unique) {
+                        const frequency = __frequency[key].get(value) ?? 0;
+                        if (frequency >= 1)
+                            return Result.Err(
+                                TableOperationError.InvalidUpdateData,
+                            );
+                        else __frequency[key].set(value, frequency + 1);
+                    }
+
+                    row[key] = value;
+                    yield Result.Ok(undefined);
+                }
+            }
+        }
+
+        return runJob(update());
     }
 
     public erase(options: TableDataQueryOptions<M>) {
@@ -416,6 +479,13 @@ export class Table<M extends Model> {
             const field = this.model[key];
             fields.delete(key);
             if (!field.validate(value[key])) return false;
+
+            if (!field.config.unique) continue;
+
+            const frequency = this.__frequency[key].get(value as any) ?? 0;
+            // NOTE: can simply be === 1, but >= 1 to guarantee for
+            // previously performed unsanitized manipulations.
+            if (frequency >= 1) return false;
         }
 
         for (const missingField of fields) {
@@ -432,6 +502,10 @@ export class Table<M extends Model> {
         return true;
     }
 }
+
+export type TableValueFrequency<M extends Model> = {
+    [K in keyof M]: Map<ModelData<M>[K], number>;
+};
 
 export enum TableDataQueryOperation {
     Eq,
@@ -471,3 +545,17 @@ export namespace query {
         predicate,
     ];
 }
+
+export enum TableUpdateDataValue {
+    Exact,
+    Computed,
+}
+
+export type TableUpdateDataFieldOption<T> =
+    | [op: TableUpdateDataValue.Exact, value: T]
+    | [op: TableUpdateDataValue.Computed, fn: (prev: T) => T];
+
+export type TableUpdateData<M extends Model> = {
+    [K in keyof M]?:
+        ModelData<M>[K] | ((prev: ModelData<M>[K]) => ModelData<M>[K]);
+};
