@@ -262,6 +262,21 @@ export class Table<M extends Model> {
         this.bulkDelete(runJob(result), epoch);
     }
 
+    public clear() {
+        this.__container.epoch = 0;
+
+        for (const key in this.model) this.__container.columns[key] = [];
+        this.__container.rows = new Map();
+
+        this.__container.tombstone = new Uint8Array(
+            this.__container.tombstone.length,
+        );
+        this.__container.dead = 0;
+
+        this.__indices.clear();
+        for (const plan of this.__plan) plan.index = undefined;
+    }
+
     public query<P extends boolean = false>(
         options: TableDataQueryOptions<M>,
         asPos: P = false as P,

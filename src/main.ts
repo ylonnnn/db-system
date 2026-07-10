@@ -64,5 +64,8 @@ function main(): void {
     //     ),
     // ];
 
-    console.log([...table.query({ price: query.range(3000, 4000) })[1]]);
+    console.log([...table.query({})[1]].map((v) => v.uid));
+    table.clear();
+
+    console.log([...table.query({})[1]].map((v) => v.uid));
 }
