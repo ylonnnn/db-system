@@ -1,3 +1,4 @@
+import { DecryptionFn, EncryptionFn } from "../storage";
 import { TableMap } from "./table";
 
 export class Database {
@@ -5,8 +6,12 @@ export class Database {
 
     private _tables: TableMap;
 
-    public constructor(public readonly identifier: string) {
-        this._tables = new TableMap();
+    public constructor(
+        public readonly identifier: string,
+        public encryption: EncryptionFn = (serialized) => serialized,
+        public decryption: DecryptionFn = (encrypted) => encrypted,
+    ) {
+        this._tables = new TableMap(this);
     }
 
     public get tables() {

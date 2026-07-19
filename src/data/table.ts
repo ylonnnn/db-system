@@ -24,7 +24,7 @@ import type {
 export class TableMap {
     protected _data: Map<string, Table<any>>;
 
-    public constructor() {
+    public constructor(private db: Database) {
         this._data = new Map();
     }
 
@@ -32,13 +32,14 @@ export class TableMap {
         key: string,
         name: string,
         model: M,
-        encryption?: EncryptionFn,
-        decryption?: DecryptionFn,
+        encryption: EncryptionFn = this.db.encryption,
+        decryption: DecryptionFn = this.db.decryption,
     ) {
-        const table = new Table<M>(key, name, model, encryption, decryption);
-        this._data.set(name, table);
+        return new Table<M>(this.db, key, name, model, encryption, decryption);
+    }
 
-        return table;
+    public set<M extends Model>(name: string, table: Table<M>) {
+        this._data.set(name, table);
     }
 
     public get<M extends Model>(name: string): Option<Table<M>> {
@@ -68,15 +69,22 @@ export class Table<M extends Model> {
     private __primaryKey: ModelPrimaryKey<M> | undefined = undefined;
 
     public constructor(
+        private db: Database,
         protected readonly key: string,
         public readonly name: string,
         public readonly model: M,
-        encryption?: EncryptionFn,
-        decryption?: DecryptionFn,
+        encryption: EncryptionFn = db.encryption,
+        decryption: DecryptionFn = db.decryption,
     ) {
+        this.db.tables.set(name, this);
         this.__storage = new Storage(
             this,
-            path.join(process.cwd(), "__data__", this.name + ".mcdb"),
+            path.join(
+                process.cwd(),
+                "__data__",
+                this.db.identifier,
+                this.name + ".mcdb",
+            ),
         );
 
         let primaryKeyCount = 0;

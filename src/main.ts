@@ -17,33 +17,30 @@ const HIDDEN_SECRET_KEY = "some_secret";
 main();
 
 function xorEncryptionDecryption(str: string, key: string) {
-    let result = new Uint16Array(str.length);
+    let result = Array(str.length);
     for (let i = 0; i < str.length; ++i)
         result[i] = str.charCodeAt(i) ^ key.charCodeAt(i % key.length);
 
-    return String.fromCharCode.apply(null, result as unknown as number[]);
+    return Array.from(result, (c) => String.fromCharCode(c)).join("");
 }
 
 function main(): void {
     let counter = 0;
-    const db = new Database("test");
-    const start = performance.now();
-    const table = db.tables.create(
-        HIDDEN_SECRET_KEY,
-        "Product",
-        {
-            id: int()
-                .primaryKey()
-                .default(() => counter++),
-            name: string().nonNull(),
-            description: string().check(
-                (value) => !value || value.length <= 256,
-            ),
-            price: float().nonNull(),
-        },
+    const db = new Database(
+        "test",
         xorEncryptionDecryption,
         xorEncryptionDecryption,
     );
+
+    const start = performance.now();
+    const table = db.tables.create(HIDDEN_SECRET_KEY, "Product", {
+        id: int()
+            .primaryKey()
+            .default(() => counter++),
+        name: string().nonNull(),
+        description: string().check((value) => !value || value.length <= 256),
+        price: float().nonNull(),
+    });
 
     console.log(
         `initialized table ${table.name}: ${performance.now() - start}`,
