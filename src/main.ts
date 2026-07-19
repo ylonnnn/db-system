@@ -17,6 +17,7 @@ main();
 function main(): void {
     let counter = 0;
     const db = new Database("test");
+    const start = performance.now();
     const table = db.tables.create("Product", {
         id: int()
             .primaryKey()
@@ -25,6 +26,9 @@ function main(): void {
         description: string().check((value) => value.length <= 256),
         price: float().nonNull(),
     });
+    console.log(
+        `initialized table ${table.name}: ${performance.now() - start}`,
+    );
 
     type ProductTable = typeof table;
     type ProductModel = ExtractModel<ProductTable>;
@@ -34,53 +38,17 @@ function main(): void {
     type ProductPK = ModelPrimaryKey<ProductModel>;
     type ProductPKType = ModelPrimaryKeyType<ProductModel>;
 
-    // table.createIndex("id");
-    // table.createIndex("price");
-
-    // // @ts-expect-error
-    // table.__container.rows.keys();
-
-    const result = table.bulkWrite(
-        Array(2 ** 16)
-            .fill(null)
-            .map((_, i) => {
-                const price = Math.random() * 5000;
-                return {
-                    name: `test ${i}`,
-                    price: Math.random() < 0.5 ? price : Math.round(price),
-                };
-            }),
-    );
-    console.log(result.filter((v) => v.isErr()));
-
-    // const result = [
-    //     ...table.query(
-    //         {
-    //             // id: query.range(10, 500),
-    //             price: query.range(3500, 4000),
-    //         },
-    //         true,
-    //     ),
-    // ];
-
-    console.log([...table.query({})[1]].map((v) => JSON.stringify(v)));
-
-    table.update(
-        {
-            id: query.range(10, 500),
-            price: query.range(3000, 4500),
-        },
-        {
-            // uid: "UID_2",
-            name: (prevName) => `${prevName} [updated]`,
-            price: (prevPrice) => prevPrice * (Math.random() * 5) + 1,
-        },
+    console.log(
+        table.write({
+            name: "sample product",
+            price: 123,
+            description: "just a sample product",
+        }),
     );
 
-    console.log([...table.query({})[1]].map((v) => JSON.stringify(v)));
+    table.save();
 
-    const [, qres] = table.query({
-        id: query.range(100, 32_000),
-    });
-    console.log([...qres].length);
+    console.log([...table.query({})[1]]);
+
+    // table.save();
 }

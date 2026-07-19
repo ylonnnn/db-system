@@ -1,3 +1,5 @@
+import path from "node:path";
+import { Storage } from "../storage";
 import {
     Option,
     PartialBy,
@@ -14,7 +16,6 @@ import type {
     ModelDataContainer,
     ModelDataContainerRowCacheKey,
     ModelOptionalField,
-    ModelPlan,
     ModelPrimaryKey,
     ModelPrimaryKeyType,
 } from "./model";
@@ -44,6 +45,8 @@ export enum TableOperationError {
 }
 
 export class Table<M extends Model> {
+    private __storage: Storage<M>;
+
     private __indices = new Map<keyof M, BPlusTree<number>>();
     private __container = {
         epoch: 0,
@@ -55,13 +58,17 @@ export class Table<M extends Model> {
 
     private __frequency = {} as TableValueFrequency<M>;
 
-    private __plan: ModelPlan<M>[] = [];
     private __primaryKey: ModelPrimaryKey<M> | undefined = undefined;
 
     public constructor(
         public readonly name: string,
         public readonly model: M,
     ) {
+        this.__storage = new Storage(
+            this,
+            path.join(process.cwd(), "__data__", this.name + ".mcdb"),
+        );
+
         let primaryKeyCount = 0;
         for (const key in this.model) {
             const field = this.model[key];
@@ -72,15 +79,6 @@ export class Table<M extends Model> {
 
             this.__container.columns[key] = [] as any[];
             this.__frequency[key] = new Map();
-            this.__plan.push({
-                key,
-                column: this.__container.columns[key],
-                frequency: this.__frequency[key],
-                default: field.config.default as (() => any) | null,
-                index:
-                    (field.config.primary ? this.createIndex(key) : undefined,
-                    this.__indices.get(key)),
-            });
         }
 
         if (primaryKeyCount > 1)
@@ -88,10 +86,38 @@ export class Table<M extends Model> {
                 "a Model cannot have more than one (1) independent primary key.",
             );
 
-        if (this.__primaryKey) this.createIndex(this.__primaryKey);
+        this.load(false);
 
-        // TODO: Load
-        // this.__container.tombstone = new Uint8Array(this.__container.rows.size)
+        if (this.__primaryKey) this.createIndex(this.__primaryKey);
+    }
+
+    public load(reload: boolean = true) {
+        const { rowCount, data } = this.__storage.load();
+
+        this.__container.tombstone = new Uint8Array(rowCount);
+        // this.__container.columns = data;
+
+        // If the data load is a reload, clear the row cache
+        if (reload) {
+            this.__container.rows.clear();
+            this.clearIndices();
+        }
+
+        const keys = Object.keys(this.model);
+        const store = this.store.bind(this);
+
+        function* bulk() {
+            for (let i = 0; i < rowCount; ++i) {
+                // For raw performance
+                const builder: Record<any, any> = {};
+                for (const key of keys) builder[key] = data[key][i];
+
+                const row = builder as ModelData<M>;
+                yield store(row);
+            }
+        }
+
+        runJob(bulk());
     }
 
     public createIndex<K extends keyof M>(field: K) {
@@ -106,6 +132,21 @@ export class Table<M extends Model> {
             tree.add(new Key(row[field], pk), i++);
 
         this.__indices.set(field, tree);
+    }
+
+    public updateIndices() {
+        for (const [field] of this.__indices) this.updateIndex(field);
+    }
+
+    public clearIndex<K extends keyof M>(field: K) {
+        this.__indices.set(
+            field,
+            new BPlusTree(Database.MAXIMUM_INDEX_KEY_COUNT),
+        );
+    }
+
+    public clearIndices() {
+        for (const [field] of this.__indices) this.clearIndex(field);
     }
 
     protected cacheKey(idx: number): ModelDataContainerRowCacheKey<M> {
@@ -123,28 +164,34 @@ export class Table<M extends Model> {
             return Result.Err(TableOperationError.InvalidData);
 
         const row = { ...data } as ModelData<M>;
-        for (let i = 0; i < this.__plan.length; ++i) {
-            const field = this.__plan[i];
-            const { key, column, frequency, default: def } = field;
+        const keys = Object.keys(this.model) as (keyof M)[];
 
-            column.push((row[key] ??= (def?.() as any) ?? null));
+        // Validation first to avoid partial insertion
+        for (const key of keys) {
+            row[key] ??= (this.model[key].config.default?.() as any) ?? null;
 
             if (this.model[key].config.unique) {
+                const frequency = this.__frequency[key];
                 const freq = frequency.get(row[key]) ?? 0;
+
                 if (freq >= 1)
                     return Result.Err(TableOperationError.InvalidData);
 
                 frequency.set(row[key], freq + 1);
             }
+        }
 
-            if (!field.index) field.index = this.__indices.get(key);
-            field.index?.add(
-                new Key(
-                    row[key],
-                    this.__primaryKey ? row[this.__primaryKey] : undefined,
-                ),
-                this.__container.rows.size,
-            );
+        for (const key of keys) {
+            this.__container.columns[key].push(row[key]);
+            this.__indices
+                .get(key)
+                ?.add(
+                    new Key(
+                        row[key],
+                        this.__primaryKey ? row[this.__primaryKey] : undefined,
+                    ),
+                    this.__container.rows.size,
+                );
         }
 
         this.__container.rows.set(
@@ -260,7 +307,19 @@ export class Table<M extends Model> {
 
         ++this.__container.epoch;
 
-        for (const [field] of this.__indices) this.updateIndex(field);
+        // Update all indices
+        this.updateIndices();
+    }
+
+    // public transact(transaction: (table: Table<M>) => void) {
+
+    // }
+
+    public save() {
+        this.__storage.save(
+            this.__container.columns,
+            this.__container.rows.size,
+        );
     }
 
     public write(
@@ -342,7 +401,6 @@ export class Table<M extends Model> {
         this.__container.dead = 0;
 
         this.__indices.clear();
-        for (const plan of this.__plan) plan.index = undefined;
     }
 
     public query<P extends boolean = false>(
@@ -355,8 +413,10 @@ export class Table<M extends Model> {
         let seekable: [keyof M, TableDataQueryFieldOption<any>][] = [];
         const residual: [keyof M, TableDataQueryFieldOption<any>][] = [];
 
-        for (const { key, index } of this.__plan) {
+        for (const key in this.model) {
+            const index = this.__indices.get(key);
             const fieldQuery = options[key];
+
             if (!fieldQuery) continue;
 
             const pair = [key, fieldQuery] as [

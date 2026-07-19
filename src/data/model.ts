@@ -76,21 +76,27 @@ export type ModelData<M extends Model> = {
 export interface ModelDataContainer<M extends Model> {
     epoch: number;
 
-    columns: {
-        [K in keyof ModelData<M>]: ModelData<M>[K][];
-    };
-    rows: Map<ModelDataContainerRowCacheKey<M>, ModelData<M>>;
+    columns: ModelDataContainerColumns<M>;
+    rows: ModelDataContainerRows<M>;
 
     tombstone: Uint8Array;
     dead: number;
 }
+export type ModelDataContainerColumns<M extends Model> = {
+    [K in keyof ModelData<M>]: ModelData<M>[K][];
+};
+export type ModelDataContainerRows<M extends Model> = Map<
+    ModelDataContainerRowCacheKey<M>,
+    ModelData<M>
+>;
+
 export type ModelDataContainerRowCacheKey<M extends Model> =
     ModelPrimaryKeyType<M> extends never ? number : ModelPrimaryKeyType<M>;
 
-export interface ModelPlan<M extends Model, K extends keyof M = keyof M> {
-    key: K;
-    column: ModelData<M>[K][];
-    frequency: Map<ModelData<M>[K], number>;
-    default: (() => ModelData<M>[K]) | null;
-    index: BPlusTree<number> | undefined;
-}
+// export interface ModelPlan<M extends Model, K extends keyof M = keyof M> {
+//     key: K;
+//     column: ModelData<M>[K][];
+//     frequency: Map<ModelData<M>[K], number>;
+//     default: (() => ModelData<M>[K]) | null;
+//     index: BPlusTree<number> | undefined;
+// }

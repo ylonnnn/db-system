@@ -1,4 +1,4 @@
-import { Result } from "../utils";
+import { isUndefined, Result } from "../utils";
 import { ModelData } from "./model";
 
 export class BPlusTree<T> {
@@ -112,6 +112,9 @@ export class Key {
     }
 
     protected compareValues(a: any, b: any): -1 | 0 | 1 {
+        if (isUndefined(a) || isUndefined(b))
+            return -1;
+
         if (typeof a !== typeof b)
             throw new Error("two values of different types are incomparable");
 
