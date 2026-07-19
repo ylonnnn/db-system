@@ -1,5 +1,5 @@
 import path from "node:path";
-import { Storage } from "../storage";
+import { DecryptionFn, EncryptionFn, Storage } from "../storage";
 import {
     Option,
     PartialBy,
@@ -7,6 +7,7 @@ import {
     isFunction,
     isObject,
     runJob,
+    runJobUntil,
 } from "../utils";
 import { BPlusTree, Key } from "./bp_tree";
 import { Database } from "./database";
@@ -27,8 +28,14 @@ export class TableMap {
         this._data = new Map();
     }
 
-    public create<M extends Model>(name: string, model: M) {
-        const table = new Table<M>(name, model);
+    public create<M extends Model>(
+        key: string,
+        name: string,
+        model: M,
+        encryption?: EncryptionFn,
+        decryption?: DecryptionFn,
+    ) {
+        const table = new Table<M>(key, name, model, encryption, decryption);
         this._data.set(name, table);
 
         return table;
@@ -61,8 +68,11 @@ export class Table<M extends Model> {
     private __primaryKey: ModelPrimaryKey<M> | undefined = undefined;
 
     public constructor(
+        protected readonly key: string,
         public readonly name: string,
         public readonly model: M,
+        encryption?: EncryptionFn,
+        decryption?: DecryptionFn,
     ) {
         this.__storage = new Storage(
             this,
@@ -86,13 +96,24 @@ export class Table<M extends Model> {
                 "a Model cannot have more than one (1) independent primary key.",
             );
 
-        this.load(false);
+        if (encryption) this.attachEncryption(encryption);
+        if (decryption) this.attachDecryption(decryption);
 
         if (this.__primaryKey) this.createIndex(this.__primaryKey);
+
+        this.load(false);
     }
 
-    public load(reload: boolean = true) {
-        const { rowCount, data } = this.__storage.load();
+    public attachEncryption(fn: EncryptionFn) {
+        this.__storage.encrypt = fn;
+    }
+
+    public attachDecryption(fn: DecryptionFn) {
+        this.__storage.decrypt = fn;
+    }
+
+    public load(reload: boolean = true): Result<void, TableOperationError> {
+        const { rowCount, data } = this.__storage.load(this.key);
 
         this.__container.tombstone = new Uint8Array(rowCount);
         // this.__container.columns = data;
@@ -104,20 +125,26 @@ export class Table<M extends Model> {
         }
 
         const keys = Object.keys(this.model);
+
         const store = this.store.bind(this);
+        const { __frequency } = this;
 
         function* bulk() {
             for (let i = 0; i < rowCount; ++i) {
                 // For raw performance
-                const builder: Record<any, any> = {};
-                for (const key of keys) builder[key] = data[key][i];
+                const row: Record<any, any> = {};
+                for (const key of keys) {
+                    row[key] = data[key][i];
+                    __frequency[key].clear();
+                }
 
-                const row = builder as ModelData<M>;
-                yield store(row);
+                yield store(row as ModelData<M>);
             }
         }
 
-        runJob(bulk());
+        return (
+            runJobUntil(bulk(), (val) => val.isErr()) ?? Result.Ok(undefined)
+        );
     }
 
     public createIndex<K extends keyof M>(field: K) {
@@ -317,6 +344,7 @@ export class Table<M extends Model> {
 
     public save() {
         this.__storage.save(
+            this.key,
             this.__container.columns,
             this.__container.rows.size,
         );

@@ -3,8 +3,13 @@ import { TableDataQueryOperation } from "./table";
 
 export type FieldSchemaDefault<T extends FieldSchemaType<any>> =
     (() => ExtractFieldSchemaTypeValueType<T>) | null;
-export type FieldSchemaCheck<T extends FieldSchemaType<any>> = (
-    value: ExtractFieldSchemaTypeValueType<T>,
+export type FieldSchemaCheck<
+    T extends FieldSchemaType<any>,
+    TNonNull extends boolean = boolean,
+> = (
+    value: TNonNull extends true
+        ? ExtractFieldSchemaTypeValueType<T>
+        : ExtractFieldSchemaTypeValueType<T> | null,
 ) => boolean;
 
 export interface FieldSchemaConfig<
@@ -17,7 +22,7 @@ export interface FieldSchemaConfig<
     unique: boolean;
     nonNull: TNonNull;
     default: TDefault;
-    check: FieldSchemaCheck<T>;
+    check: FieldSchemaCheck<T, TNonNull>;
 }
 
 export type ExtractFieldSchemaType<T> =
@@ -83,7 +88,7 @@ export class FieldSchema<
     }
 
     public check(
-        fn: FieldSchemaCheck<T>,
+        fn: FieldSchemaCheck<T, TNonNull>,
     ): FieldSchema<T, TPrimary, TNonNull, TDefault> {
         this.__config.check = fn;
         return this;
@@ -92,9 +97,11 @@ export class FieldSchema<
     public validate(value: any): boolean {
         return (
             // Null value guard clause
-            (this.__config.nonNull ? !isUndefined(value) : true) &&
-            // Type guard clause
-            this.type.validate(value) &&
+            (this.__config.nonNull
+                ? !isUndefined(value) &&
+                  // Type guard clause
+                  this.type.validate(value)
+                : true) &&
             // Additional check function
             this.__config.check(value)
         );

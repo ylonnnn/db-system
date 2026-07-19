@@ -16,15 +16,13 @@ export type EncryptionFn = (serialized: string, key: string) => string;
 export type DecryptionFn = (encrypted: string, key: string) => string;
 
 export class Storage<M extends Model> {
-    protected encrypt: EncryptionFn = (serialized) => serialized;
-    protected decrypt: DecryptionFn = (encrypted) => encrypted;
+    public encrypt: EncryptionFn = (serialized) => serialized;
+    public decrypt: DecryptionFn = (encrypted) => encrypted;
 
     public constructor(
         private table: Table<M>,
         private path: string,
-    ) {
-        this.load();
-    }
+    ) {}
 
     protected serialize(
         data: ModelDataContainerColumns<M>,
@@ -58,20 +56,25 @@ export class Storage<M extends Model> {
               };
     }
 
-    public load() {
+    public load(key: string) {
         if (!fs.existsSync(this.path)) {
             fs.mkdirSync(path.dirname(this.path), { recursive: true });
             fs.writeFileSync(this.path, "");
         }
 
-        const decrypted = this.decrypt(fs.readFileSync(this.path, "utf-8"), "");
+        const decrypted = this.decrypt(
+            fs.readFileSync(this.path, "utf-8"),
+            key,
+        );
+
+        console.log(decrypted)
 
         return this.deserialize(decrypted);
     }
 
-    public save(data: ModelDataContainerColumns<M>, size: number) {
+    public save(key: string, data: ModelDataContainerColumns<M>, size: number) {
         const serialized = this.serialize(data, size);
-        const encrypted = this.encrypt(serialized, "");
+        const encrypted = this.encrypt(serialized, key);
 
         fs.writeFileSync(this.path, encrypted, "utf-8");
     }
